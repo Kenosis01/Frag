@@ -1,0 +1,10 @@
+# FRAG: Fingerprint Retrieval Augmented Generation
+# Essential dependencies
+
+unstructured>=0.10.0           # Document parsing and chunking
+unstructured[pdf]>=0.10.0       # PDF support
+
+# Core NLP libraries
+spacy>=3.7.0                   # NER, lemmatization
+nltk>=3.8                      # N-gram generation
+rank-bm25>=0.2.2               # BM25 similarity scoring
