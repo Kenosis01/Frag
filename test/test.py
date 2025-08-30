@@ -17,11 +17,27 @@ class FragTester:
         
         try:
             with open(corpus_file, 'r', encoding='utf-8') as f:
-                for line in f:
-                    doc = json.loads(line.strip())
-                    doc_id = self.frag.add_chunk(doc['text'], {'doc_id': doc['id']})
-                    count += 1
-                    print(f"  ✅ Loaded doc {doc['id']} -> chunk_id {doc_id}")
+                for line_num, line in enumerate(f, 1):
+                    line = line.strip()
+                    if not line:  # Skip empty lines
+                        continue
+                    
+                    try:
+                        doc = json.loads(line)
+                        if 'text' not in doc or '_id' not in doc:
+                            print(f"  ⚠️ Skipping line {line_num}: Missing required fields")
+                            continue
+                            
+                        doc_id = self.frag.add_chunk(doc['text'], {'doc_id': doc['_id']})
+                        count += 1
+                        print(f"  ✅ Loaded doc {doc['_id']} -> chunk_id {doc_id}")
+                        
+                    except json.JSONDecodeError as e:
+                        print(f"  ⚠️ Skipping line {line_num}: Invalid JSON - {e}")
+                        continue
+                    except Exception as e:
+                        print(f"  ⚠️ Error processing line {line_num}: {e}")
+                        continue
                     
             print(f"\n📊 Total documents loaded: {count}")
             return True
@@ -39,9 +55,26 @@ class FragTester:
         
         try:
             with open(queries_file, 'r', encoding='utf-8') as f:
-                for line in f:
-                    query = json.loads(line.strip())
-                    queries.append(query)
+                for line_num, line in enumerate(f, 1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                        
+                    try:
+                        query = json.loads(line)
+                        # Convert to expected format
+                        formatted_query = {
+                            'query_id': query['_id'],
+                            'query': query['text']
+                        }
+                        queries.append(formatted_query)
+                        
+                    except json.JSONDecodeError as e:
+                        print(f"  ⚠️ Skipping query line {line_num}: Invalid JSON - {e}")
+                        continue
+                    except KeyError as e:
+                        print(f"  ⚠️ Skipping query line {line_num}: Missing field {e}")
+                        continue
                     
             print(f"📝 Loaded {len(queries)} test queries")
             return queries
@@ -59,12 +92,32 @@ class FragTester:
         
         try:
             with open(qrels_file, 'r', encoding='utf-8') as f:
-                for line in f:
-                    qrel = json.loads(line.strip())
-                    query_id = qrel['query_id']
-                    if query_id not in qrels:
-                        qrels[query_id] = []
-                    qrels[query_id].append(qrel)
+                for line_num, line in enumerate(f, 1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                        
+                    try:
+                        qrel = json.loads(line)
+                        # Convert to expected format
+                        query_id = qrel['query-id']
+                        formatted_qrel = {
+                            'query_id': query_id,
+                            'doc_id': qrel['corpus-id'],
+                            'relevance': qrel.get('score', 1),  # Use score as relevance
+                            'label': 'relevant' if qrel.get('score', 1) > 0 else 'not_relevant'
+                        }
+                        
+                        if query_id not in qrels:
+                            qrels[query_id] = []
+                        qrels[query_id].append(formatted_qrel)
+                        
+                    except json.JSONDecodeError as e:
+                        print(f"  ⚠️ Skipping qrel line {line_num}: Invalid JSON - {e}")
+                        continue
+                    except KeyError as e:
+                        print(f"  ⚠️ Skipping qrel line {line_num}: Missing field {e}")
+                        continue
                     
             print(f"📋 Loaded relevance judgments for {len(qrels)} queries")
             return qrels
