@@ -1,12 +1,9 @@
-import hashlib, re, sqlite3
+import hashlib, re, json
 from collections import Counter
-from unstructured.partition.auto import partition
-from unstructured.chunking.title import chunk_by_title
 import spacy
 import nltk
 from nltk.corpus import stopwords
-from nltk.util import ngrams
-from rank_bm25 import BM25Okapi
+from elasticsearch import Elasticsearch
 import sys
 
 try:
@@ -20,14 +17,24 @@ except LookupError:
     nltk.download('stopwords', quiet=True)
 
 class Frag:
-    """Fingerprint Retrieval Augmented Generation system."""
+    """Fingerprint Retrieval Augmented Generation system - Elasticsearch powered."""
     
-    def __init__(self, ngram_size=3, top_features=12, db_path="frag.db"):
+    def __init__(self, ngram_size=3, top_features=12, es_host="localhost:9200", index_name="frag_chunks"):
         self.ngram_size, self.top_features = ngram_size, top_features
-        self.db_path = db_path
+        self.index_name = index_name
         
-        self.init_db()
-        
+        # Initialize Elasticsearch client
+        try:
+            self.es = Elasticsearch([es_host])
+            # Test connection
+            if not self.es.ping():
+                raise ConnectionError("Cannot connect to Elasticsearch")
+        except Exception as e:
+            print(f"Elasticsearch connection failed: {e}")
+            print("Make sure Elasticsearch is running on {es_host}")
+            self.es = None
+            
+        # Initialize spaCy
         try:
             self.nlp = spacy.load("en_core_web_sm", disable=["parser"])
         except OSError:
@@ -35,44 +42,58 @@ class Frag:
             self.nlp = None
             
         self.stop_words = set(stopwords.words('english'))
-        # Remove YAKE as per specification for minimal approach
         
-        self.bm25 = None
-        self.corpus_features = []
+        # Initialize index
+        self.init_index()
     
-    def init_db(self):
-        """Initialize SQLite database."""
-        self.conn = sqlite3.connect(self.db_path)
-        self.conn.execute('''
-            CREATE TABLE IF NOT EXISTS chunks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                content TEXT NOT NULL,
-                fingerprint TEXT NOT NULL,
-                features TEXT,
-                metadata TEXT,
-                source_file TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_fingerprint ON chunks(fingerprint)')
-        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_source ON chunks(source_file)')
-        self.conn.commit()
+
     
-    def build_bm25_corpus(self):
-        """Build BM25 corpus from stored chunks."""
-        cursor = self.conn.execute('SELECT features FROM chunks')
-        self.corpus_features = []
+    
+    def init_index(self):
+        """Initialize Elasticsearch index with optimized mapping for text search."""
+        if not self.es:
+            return
+            
+        # Index mapping optimized for BM25 and feature search
+        mapping = {
+            "mappings": {
+                "properties": {
+                    "content": {
+                        "type": "text",
+                        "analyzer": "standard",
+                        "similarity": "BM25"
+                    },
+                    "features": {
+                        "type": "text",
+                        "analyzer": "keyword",
+                        "similarity": "BM25"
+                    },
+                    "fingerprint": {"type": "keyword"},
+                    "metadata": {"type": "object"},
+                    "created_at": {"type": "date"}
+                }
+            },
+            "settings": {
+                "number_of_shards": 1,
+                "number_of_replicas": 0,
+                "analysis": {
+                    "analyzer": {
+                        "feature_analyzer": {
+                            "tokenizer": "keyword",
+                            "filter": ["lowercase"]
+                        }
+                    }
+                }
+            }
+        }
         
-        for row in cursor:
-            features_str = row[0]
-            if features_str:
-                features = features_str.split('|')
-                self.corpus_features.append(features)
-        
-        if self.corpus_features:
-            self.bm25 = BM25Okapi(self.corpus_features)
-        else:
-            self.bm25 = None
+        # Create index if it doesn't exist
+        try:
+            if not self.es.indices.exists(index=self.index_name):
+                self.es.indices.create(index=self.index_name, body=mapping)
+                print(f"✅ Created Elasticsearch index: {self.index_name}")
+        except Exception as e:
+            print(f"Error creating index: {e}")
     
     def extract_features(self, text, is_query=False):
         """Extract sparse features from text - fully dynamic, no hardcoded patterns."""
@@ -144,119 +165,149 @@ class Frag:
         return list(set(features))
     
     def add_chunk(self, text, meta=None):
-        """Add chunk to database."""
-        if not text.strip():
+        """Add text chunk to Elasticsearch index."""
+        if not text.strip() or not self.es:
             return None
             
         features = self.extract_features(text)
         fp = hashlib.md5('|'.join(features).encode()).hexdigest()[:12]
         
-        cursor = self.conn.execute('''
-            INSERT INTO chunks (content, fingerprint, features, metadata, source_file)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (
-            text, 
-            fp, 
-            '|'.join(features),
-            str(meta or {}),
-            meta.get('source', '') if meta else ''
-        ))
-        self.conn.commit()
+        # Prepare document for Elasticsearch
+        doc = {
+            'content': text,
+            'fingerprint': fp,
+            'features': ' '.join(features),  # Space-separated for text analysis
+            'metadata': meta or {},
+            'created_at': 'now'
+        }
         
-        self.build_bm25_corpus()
-        
-        return cursor.lastrowid
+        try:
+            # Index document in Elasticsearch
+            result = self.es.index(index=self.index_name, body=doc)
+            return result['_id']
+        except Exception as e:
+            print(f"Error indexing document: {e}")
+            return None
     
-    def chunk_document(self, file_path):
-        """Chunk document into smaller pieces."""
-        elements = partition(filename=file_path)
-        chunks = chunk_by_title(
-            elements, 
-            max_characters=500,
-            new_after_n_chars=400,
-            overlap=50
-        )
-        return [str(chunk).strip() for chunk in chunks if len(str(chunk).strip()) > 30]
-    
-    def add_document(self, file_path):
-        """Process and add entire document."""
-        chunks = self.chunk_document(file_path)
-        chunk_ids = []
-        
-        for i, chunk_text in enumerate(chunks):
-            meta = {'source': file_path, 'chunk_index': i, 'total_chunks': len(chunks)}
-            chunk_id = self.add_chunk(chunk_text, meta)
-            if chunk_id:
-                chunk_ids.append(chunk_id)
-        
-        return chunk_ids
+
     
     def retrieve(self, query, top_k=3):
-        """Retrieve similar chunks using BM25 - fully dynamic matching."""
-        if not self.bm25:
-            self.build_bm25_corpus()
-            if not self.bm25:
-                return []
+        """Retrieve similar chunks using Elasticsearch BM25 search."""
+        if not self.es:
+            return []
         
         # Extract query features dynamically
         query_features = self.extract_features(query, is_query=True)
         if not query_features:
             return []
         
+        # Build Elasticsearch query using multi_match for BM25 scoring
+        search_body = {
+            "query": {
+                "bool": {
+                    "should": [
+                        {
+                            "multi_match": {
+                                "query": query,
+                                "fields": ["content^2", "features"],  # Boost content field
+                                "type": "best_fields",
+                                "tie_breaker": 0.3
+                            }
+                        },
+                        {
+                            "multi_match": {
+                                "query": ' '.join(query_features),
+                                "fields": ["features^1.5", "content"],
+                                "type": "cross_fields",
+                                "tie_breaker": 0.5
+                            }
+                        }
+                    ],
+                    "minimum_should_match": 1
+                }
+            },
+            "size": top_k,
+            "_source": ["content", "metadata", "fingerprint"]
+        }
+        
         try:
-            scores = self.bm25.get_scores(query_features)
-        except:
-            return []
-        
-        cursor = self.conn.execute(
-            'SELECT id, content, features, metadata FROM chunks ORDER BY id'
-        )
-        
-        results = []
-        for i, row in enumerate(cursor):
-            if i < len(scores):
-                chunk_id, content, features, metadata = row
-                score = scores[i]
+            # Execute search
+            response = self.es.search(index=self.index_name, body=search_body)
+            
+            results = []
+            for hit in response['hits']['hits']:
+                doc_id = hit['_id']
+                score = hit['_score']
+                source = hit['_source']
                 
                 # Dynamic content matching boost
                 query_words = [w.lower() for w in query.split() if len(w) > 2]
-                content_lower = content.lower()
+                content_lower = source['content'].lower()
                 
                 # Count overlapping words between query and content
-                word_matches = 0
-                for word in query_words:
-                    if word in content_lower:
-                        word_matches += 1
+                word_matches = sum(1 for word in query_words if word in content_lower)
                 
                 # Apply dynamic boost based on word overlap ratio
                 if word_matches > 0:
                     overlap_ratio = word_matches / len(query_words)
-                    boost_factor = 1 + (overlap_ratio * 0.5)  # Up to 50% boost
+                    boost_factor = 1 + (overlap_ratio * 0.3)  # Up to 30% boost
                     score *= boost_factor
                 
-                # Include all non-zero scores
-                if score > 0:
-                    results.append((chunk_id, score, content, metadata))
-        
-        # Sort by score and return top-k
-        results.sort(key=lambda x: x[1], reverse=True)
-        return results[:top_k]
+                results.append((doc_id, score, source['content'], source.get('metadata', {})))
+            
+            # Sort by adjusted score
+            results.sort(key=lambda x: x[1], reverse=True)
+            return results
+            
+        except Exception as e:
+            print(f"Search error: {e}")
+            return []
     
     def get_stats(self):
-        """Get database statistics."""
-        cursor = self.conn.execute('SELECT COUNT(*) FROM chunks')
-        total_chunks = cursor.fetchone()[0]
-        
-        cursor = self.conn.execute('SELECT COUNT(DISTINCT source_file) FROM chunks')
-        unique_sources = cursor.fetchone()[0]
-        
-        return {
-            'total_chunks': total_chunks,
-            'unique_sources': unique_sources,
-            'db_path': self.db_path
-        }
+        """Get Elasticsearch index statistics."""
+        if not self.es:
+            return {'error': 'Elasticsearch not connected'}
+            
+        try:
+            # Get index stats
+            stats = self.es.indices.stats(index=self.index_name)
+            count_result = self.es.count(index=self.index_name)
+            
+            return {
+                'total_chunks': count_result['count'],
+                'index_name': self.index_name,
+                'storage_type': 'elasticsearch',
+                'index_size': stats['indices'][self.index_name]['total']['store']['size_in_bytes']
+            }
+        except Exception as e:
+            return {'error': f'Stats error: {e}'}
     
-    def close(self):
-        """Close database connection."""
-        if hasattr(self, 'conn'):
-            self.conn.close()
+    def clear_index(self):
+        """Clear all documents from the index."""
+        if not self.es:
+            return False
+            
+        try:
+            # Delete all documents
+            self.es.delete_by_query(
+                index=self.index_name,
+                body={"query": {"match_all": {}}}
+            )
+            return True
+        except Exception as e:
+            print(f"Error clearing index: {e}")
+            return False
+    
+    def delete_index(self):
+        """Delete the entire index."""
+        if not self.es:
+            return False
+            
+        try:
+            if self.es.indices.exists(index=self.index_name):
+                self.es.indices.delete(index=self.index_name)
+                print(f"✅ Deleted index: {self.index_name}")
+                return True
+        except Exception as e:
+            print(f"Error deleting index: {e}")
+            return False
