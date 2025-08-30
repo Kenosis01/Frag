@@ -96,11 +96,11 @@ class Frag:
         word_freq = Counter(tokens)
         total_words = len(tokens)
         
-        # Select top words based on frequency distribution
-        feature_limit = self.top_features * 2 if is_query else self.top_features
+        # Select top words based on frequency distribution with higher threshold
+        feature_limit = self.top_features if is_query else self.top_features // 2  # Reduce for documents
         for word, count in word_freq.most_common(feature_limit):
-            # Dynamic threshold based on document characteristics
-            min_freq = max(1, total_words // 100)  # At least 1% frequency or minimum 1
+            # Higher threshold for better precision
+            min_freq = max(2, total_words // 50)  # At least 2% frequency or minimum 2
             if count >= min_freq:
                 features.append(word)
         
@@ -194,15 +194,17 @@ class Frag:
                 # Count overlapping words between query and content
                 word_matches = sum(1 for word in query_words if word in content_lower)
                 
-                # Apply dynamic boost based on word overlap ratio
+                # Apply stricter boosting for precision
                 if word_matches > 0:
                     overlap_ratio = word_matches / len(query_words)
-                    boost_factor = 1 + (overlap_ratio * 0.5)  # Up to 50% boost
-                    score *= boost_factor
+                    # Only boost if significant overlap (>30%)
+                    if overlap_ratio > 0.3:
+                        boost_factor = 1 + (overlap_ratio * 0.3)  # Reduced boost
+                        score *= boost_factor
                 
-                # Include all non-zero scores
-                if score > 0:
-                    results.append((chunk_id, score, content, json.loads(metadata or '{}')))
+                # Higher threshold for better precision
+                if score > 0.1:  # Increased from 0 to 0.1
+                    results.append((chunk_id, score, content, json.loads(metadata or '{}'))))
         
         # Sort by score and return top-k
         results.sort(key=lambda x: x[1], reverse=True)

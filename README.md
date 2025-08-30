@@ -1,9 +1,10 @@
 # FRAG: Fingerprint Retrieval Augmented Generation
+# FRAG: Fingerprint Retrieval Augmented Generation
 ## A Novel Approach to Document Retrieval Using Sparse Feature Fingerprinting
 
 ### Abstract
 
-This paper presents FRAG (Fingerprint Retrieval Augmented Generation), a novel document retrieval system that replaces traditional dense embedding approaches with sparse feature fingerprinting. Unlike conventional Retrieval Augmented Generation (RAG) systems that rely on neural embeddings and vector similarity, FRAG employs deterministic fingerprint generation using linguistic features, n-grams, and named entities, combined with BM25 ranking for superior retrieval performance. Our approach demonstrates significant advantages in interpretability, computational efficiency, and storage requirements while maintaining competitive retrieval accuracy.
+This paper presents FRAG (Fingerprint Retrieval Augmented Generation), a novel document retrieval system that replaces traditional dense embedding approaches with sparse feature fingerprinting. Unlike conventional Retrieval Augmented Generation (RAG) systems that rely on neural embeddings and vector similarity, FRAG employs deterministic fingerprint generation using linguistic features, n-grams, and named entities, combined with BM25 ranking for superior retrieval performance. The system supports both SQLite and Elasticsearch backends for different deployment scenarios and includes a comprehensive testing framework with real-time evaluation.
 
 **Keywords:** Information Retrieval, Document Fingerprinting, BM25, Sparse Features, Natural Language Processing
 
@@ -28,19 +29,43 @@ The need for interpretable, efficient, and deterministic retrieval systems has m
 2. **Efficiency**: Lower computational and storage requirements
 3. **Determinism**: Consistent results independent of model updates
 4. **Flexibility**: Easy integration of domain-specific features
+5. **Scalability**: Multiple storage backends (SQLite, Elasticsearch)
 
 ### 1.3 Contributions
 
-This paper makes the following contributions:
+This project makes the following contributions:
 
 1. **Novel Architecture**: Introduction of FRAG, a sparse feature-based retrieval system
-2. **Feature Engineering**: Comprehensive approach to linguistic feature extraction
-3. **Evaluation Framework**: Comparison with traditional RAG approaches
-4. **Implementation**: Open-source system demonstrating practical applicability
+2. **Dual Storage Support**: Both SQLite (testing) and Elasticsearch (production) backends
+3. **Dynamic Feature Extraction**: No hardcoded patterns, fully adaptive processing
+4. **Comprehensive Testing**: Real-time test framework with 46 documents and 1000 queries
+5. **Evaluation Framework**: Automatic calculation of precision, recall, and F1-score
+6. **Implementation**: Open-source system demonstrating practical applicability
 
 ---
 
-## 2. Related Work
+## 2. Quick Start
+
+### Installation
+```bash
+pip install -r requirements.txt
+python -m spacy download en_core_web_sm
+```
+
+### SQLite Testing
+```bash
+cd test && python test.py
+```
+
+### Elasticsearch Production
+```bash
+docker run -d --name elasticsearch -p 9200:9200 elasticsearch:7.17.0
+python demo.py
+```
+
+---
+
+## 3. Related Work
 
 ### 2.1 Traditional Information Retrieval
 
@@ -56,90 +81,34 @@ Recent work has explored hybrid dense-sparse retrieval systems, attempting to co
 
 ---
 
-## 3. Methodology
+## 4. Current Implementation
 
-### 3.1 System Architecture
+### 4.1 System Architecture
 
-FRAG employs a three-stage pipeline:
-
-```
-Document Processing → Feature Extraction → Fingerprint Generation → Storage
-                                ↓
-Query Processing → Feature Extraction → BM25 Retrieval → Ranking
-```
-
-### 3.2 Document Chunking
-
-Documents are segmented using the `unstructured` library with optimized parameters:
-
-- **Chunk Size**: 400 characters (optimized for semantic coherence)
-- **Overlap**: 30 characters (maintaining context continuity)
-- **Segmentation**: 300-character boundary for new chunks
-
-This chunking strategy balances granularity with contextual preservation, ensuring that relevant information spans are captured while maintaining manageable chunk sizes for processing.
-
-### 3.3 Feature Extraction
-
-FRAG employs a multi-faceted approach to feature extraction:
-
-#### 3.3.1 Lexical Features
-
-**Lemmatized Words**: Using spaCy's lemmatization with POS tagging, we extract the top-N most frequent content words, filtering stopwords and maintaining only tokens longer than 2 characters.
-
-**N-gram Features**: Bigrams are extracted to capture local context and phrase-level information, providing semantic coherence beyond individual words.
-
-#### 3.3.2 Named Entity Recognition
-
-**Entity Extraction**: Focus on PERSON and ORG entities as they typically carry high semantic weight and domain-specific information.
-
-**Entity Normalization**: Entities are normalized to lowercase with space replacement for consistent matching.
-
-#### 3.3.3 Feature Weighting
-
-Features are weighted by frequency, with the top-k most frequent features selected based on the configured feature limit. This approach ensures that dominant themes and concepts are prioritized while filtering noise.
-
-### 3.4 Fingerprint Generation
-
-Fingerprints are generated through deterministic hashing:
-
-```python
-features = extract_features(text)
-fingerprint = hashlib.md5('|'.join(sorted(features)).encode()).hexdigest()[:12]
-```
-
-This approach ensures:
-- **Determinism**: Identical inputs always produce identical fingerprints
-- **Compactness**: 12-character hex representation for efficient storage
-- **Collision Resistance**: MD5 provides sufficient collision resistance for practical applications
-
-### 3.5 Retrieval Algorithm
-
-FRAG employs BM25 (Best Matching 25) for scoring and ranking:
-
-#### 3.5.1 BM25 Formulation
-
-For a query Q and document D, the BM25 score is:
+FRAG employs dynamic feature extraction with dual storage support:
 
 ```
-BM25(Q,D) = Σ IDF(qi) × f(qi,D) × (k1 + 1) / (f(qi,D) + k1 × (1 - b + b × |D|/avgdl))
+Text Input → Feature Extraction → BM25 Retrieval → Ranked Results
+     ↓              ↓                ↓             ↓
+No hardcoded    Lemmas + N-grams    SQLite/ES      Real-time
+patterns        + Named Entities    Storage        evaluation
 ```
 
-Where:
-- `IDF(qi)`: Inverse document frequency of term qi
-- `f(qi,D)`: Frequency of qi in document D
-- `k1, b`: Tuning parameters (k1=1.2, b=0.75 by default)
-- `|D|`: Document length
-- `avgdl`: Average document length
+### 4.2 Storage Options
+- **SQLite**: `test/frag.py` - Testing with 46 docs + 1000 queries
+- **Elasticsearch**: `frag.py` - Production-ready scalable backend
 
-#### 3.5.2 Feature-Based Adaptation
+### 4.3 Dynamic Features
+- Lemmatized words with POS filtering
+- Frequency-based bigrams and trigrams  
+- All named entity types (no hardcoding)
+- Adaptive thresholds based on document characteristics
 
-In FRAG, traditional "terms" are replaced with extracted features, allowing BM25 to operate on:
-- Lemmatized words
-- N-gram sequences
-- Named entities
-- Domain-specific features
-
-This adaptation maintains BM25's proven ranking effectiveness while leveraging sophisticated linguistic features.
+### 4.4 Test Framework
+- Real-time query processing display
+- Automatic P/R/F1 evaluation
+- Handles existing JSONL data formats
+- Error-tolerant JSON parsing
 
 ---
 
